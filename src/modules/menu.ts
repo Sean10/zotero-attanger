@@ -12,70 +12,80 @@ const filenameExtRE = /\.[^.]+$/;
  * 避免因为选中A操作移动，移动过程中点击了B分类
  */
 let selectedCollection: Zotero.Collection | undefined
+
+// 防止 Notifier 回调递归触发（attachNewFile 会创建新 item，再次触发 item.add）
+let _isProcessingNotify = false;
+
 export default class Menu {
   constructor() {
     registerNotify(["item"],
       async (event: _ZoteroTypes.Notifier.Event, type: _ZoteroTypes.Notifier.Type, ids: string[] | number[], extraData: _ZoteroTypes.anyObj) => {
         ztoolkit.log(event, type, extraData);
         if (type == "item" && event == "add") {
+          if (_isProcessingNotify) return;
+          _isProcessingNotify = true;
           window.setTimeout(async () => {
-            const items = Zotero.Items.get(ids as number[]);
-            const attItems = [];
-            for (const item of items) {
-              if (
-                item.isImportedAttachment() &&
-                (await item.fileExists())
-              ) {
-                await Zotero.RecognizeDocument.recognizeItems([item]);
-                attItems.push(item);
+            try {
+              const items = Zotero.Items.get(ids as number[]);
+              const attItems = [];
+              for (const item of items) {
+                if (
+                  item.isImportedAttachment() &&
+                  (await item.fileExists())
+                ) {
+                  await Zotero.RecognizeDocument.recognizeItems([item]);
+                  attItems.push(item);
+                }
+                if (item.isTopLevelItem() && item.isRegularItem()) {
+                  // 新条目创建（如 Connector 触发），尝试从 sourceDir 附加文件并重命名移动
+                  if (getPref("autoAttachRenameMoveOnCreate")) {
+                    try {
+                      const result = await attachRenameMoveForItem(item.id);
+                      if (result) {
+                        ztoolkit.log(`Auto attach-rename-move completed for item ${item.id}`);
+                        continue;
+                      }
+                    } catch (e) {
+                      ztoolkit.log(`Auto attach-rename-move failed for item ${item.id}:`, e);
+                    }
+                  }
+                  // 如果 sourceDir 没有文件，回退到处理已有附件的逻辑
+                  await Zotero.Promise.delay(1000);
+                  for (const id of item.getAttachments()) {
+                    attItems.push(Zotero.Items.get(id));
+                  }
+                }
               }
-              if (item.isTopLevelItem() && item.isRegularItem()) {
-                // 新条目创建（如 Connector 触发），尝试从 sourceDir 附加文件并重命名移动
-                if (getPref("autoAttachRenameMoveOnCreate")) {
+              ztoolkit.log(attItems)
+              if (attItems.length > 0) {
+                attItems.map(async (att: Zotero.Item) => {
                   try {
-                    const result = await attachRenameMoveForItem(item.id);
-                    if (result) {
-                      ztoolkit.log(`Auto attach-rename-move completed for item ${item.id}`);
-                      continue;
+                    const canProcess = checkFileType(att);
+                    const filenameNoExt = canProcess
+                      ? await getAttachmentFilenameNoExt(att)
+                      : null;
+                    if (isFilenameMatched("filenameSkipAutoMoveRenameRules", filenameNoExt)) {
+                      showAttachmentItem(att);
+                      return;
+                    }
+                    if (canProcess && Zotero.Prefs.get("autoRenameFiles")) {
+                      await renameFile(att);
+                    }
+                    if (
+                      canProcess &&
+                      getPref("autoMove") &&
+                      getPref("attachType") == "linking"
+                    ) {
+                      att = (await moveFile(att)) as Zotero.Item;
                     }
                   } catch (e) {
-                    ztoolkit.log(`Auto attach-rename-move failed for item ${item.id}:`, e);
+                    ztoolkit.log(e);
                   }
-                }
-                // 如果 sourceDir 没有文件，回退到处理已有附件的逻辑
-                await Zotero.Promise.delay(1000);
-                for (const id of item.getAttachments()) {
-                  attItems.push(Zotero.Items.get(id));
-                }
+                  showAttachmentItem(att);
+                });
               }
-            }
-            ztoolkit.log(attItems)
-            if (attItems.length > 0) {
-              attItems.map(async (att: Zotero.Item) => {
-                try {
-                  const canProcess = checkFileType(att);
-                  const filenameNoExt = canProcess
-                    ? await getAttachmentFilenameNoExt(att)
-                    : null;
-                  if (isFilenameMatched("filenameSkipAutoMoveRenameRules", filenameNoExt)) {
-                    showAttachmentItem(att);
-                    return;
-                  }
-                  if (canProcess && Zotero.Prefs.get("autoRenameFiles")) {
-                    await renameFile(att);
-                  }
-                  if (
-                    canProcess &&
-                    getPref("autoMove") &&
-                    getPref("attachType") == "linking"
-                  ) {
-                    att = (await moveFile(att)) as Zotero.Item;
-                  }
-                } catch (e) {
-                  ztoolkit.log(e);
-                }
-                showAttachmentItem(att);
-              });
+            } finally {
+              _isProcessingNotify = false;
             }
           });
         }
