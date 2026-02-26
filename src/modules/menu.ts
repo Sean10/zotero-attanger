@@ -30,7 +30,17 @@ export default class Menu {
                 attItems.push(item);
               }
               if (item.isTopLevelItem() && item.isRegularItem()) {
-                // 等待是否有新增附件
+                // 新条目创建（如 Connector 触发），尝试从 sourceDir 附加文件并重命名移动
+                try {
+                  const result = await attachRenameMoveForItem(item.id);
+                  if (result) {
+                    ztoolkit.log(`Auto attach-rename-move completed for item ${item.id}`);
+                    continue;
+                  }
+                } catch (e) {
+                  ztoolkit.log(`Auto attach-rename-move failed for item ${item.id}:`, e);
+                }
+                // 如果 sourceDir 没有文件，回退到处理已有附件的逻辑
                 await Zotero.Promise.delay(1000);
                 for (const id of item.getAttachments()) {
                   attItems.push(Zotero.Items.get(id));
@@ -81,7 +91,8 @@ export default class Menu {
   }
 
   private register() {
-    ztoolkit.Menu.register("item", {
+    const menuApi = (ztoolkit as any).Menu;
+    menuApi.register("item", {
       tag: "menu",
       id: "attanger-menu",
       label: "Attanger",
@@ -110,7 +121,7 @@ export default class Menu {
           tag: "menuitem",
           label: getString("rename-move-attachment"),
           icon: addon.data.icons.renameMoveAttachment,
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             selectedCollection = ZoteroPane.getSelectedCollection()
             for (const item of getAttachmentItems(false)) {
               try {
@@ -123,7 +134,7 @@ export default class Menu {
             }
           },
         },
-        {tag: "menuseparator"},
+        { tag: "menuseparator" },
         // 匹配附件
         {
           tag: "menuitem",
@@ -133,7 +144,7 @@ export default class Menu {
             const items = ZoteroPane.getSelectedItems();
             return items.some((i) => i.isTopLevelItem() && i.isRegularItem());
           },
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             await matchAttachment();
           },
         },
@@ -146,7 +157,7 @@ export default class Menu {
             const items = ZoteroPane.getSelectedItems();
             return items.some((i) => i.isTopLevelItem() && i.isRegularItem());
           },
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             await matchAttangerAttachment();
           },
         },
@@ -155,7 +166,7 @@ export default class Menu {
           tag: "menuitem",
           label: getString("rename-attachment"),
           icon: addon.data.icons.renameAttachment,
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             for (const item of getAttachmentItems()) {
               try {
                 const attItem = await renameFile(item);
@@ -170,7 +181,7 @@ export default class Menu {
           tag: "menuitem",
           label: getString("move-attachment"),
           icon: addon.data.icons.moveFile,
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             selectedCollection = ZoteroPane.getSelectedCollection()
             for (const item of getAttachmentItems(false)) {
               try {
@@ -261,14 +272,14 @@ export default class Menu {
       await attachNewFileCallback();
     });
     // 分类
-    ztoolkit.Menu.register("collection", {
+    menuApi.register("collection", {
       tag: "menuitem",
       label: getString("attach-new-file"),
       icon: addon.data.icons.attachNewFile,
       getVisibility: () => {
         return ZoteroPane.getCollectionTreeRow()?.isCollection();
       },
-      commandListener: async (_ev) => {
+      commandListener: async (_ev: any) => {
         const collection = ZoteroPane.getSelectedCollection() as Zotero.Collection;
         await attachNewFile({
           libraryID: collection.libraryID,
@@ -355,11 +366,11 @@ export default class Menu {
           `${config.addonRef}.openUsing`,
           JSON.stringify(fileHandlerArr),
         );
-        await ztoolkit.Menu.unregisterAll();
+        await menuApi.unregisterAll();
         new Menu();
       });
     };
-    ztoolkit.Menu.register("item", {
+    menuApi.register("item", {
       tag: "menu",
       getVisibility: () => getAttachmentItems(false).length > 0,
       label: getString("open-using"),
@@ -368,7 +379,7 @@ export default class Menu {
         {
           tag: "menuitem",
           label: "Zotero",
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             // 第二个参数应该从文件分析得出，默认pdf
             openUsing("", "pdf");
           },
@@ -376,11 +387,11 @@ export default class Menu {
         {
           tag: "menuitem",
           label: "System",
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             openUsing("system", "pdf");
           },
         },
-        ...fileHandlerArr.map((fileHandler: string) =>{
+        ...fileHandlerArr.map((fileHandler: string) => {
           return (
             {
               tag: "menuitem",
@@ -426,7 +437,7 @@ export default class Menu {
         {
           tag: "menuitem",
           label: getString("choose-other-app"),
-          commandListener: async (_ev) => {
+          commandListener: async (_ev: any) => {
             // @ts-ignore window
             const fp = new window.FilePicker();
             fp.init(window, "Select Destination Directory", fp.modeOpen);
@@ -907,6 +918,50 @@ export async function moveFile(attItem: any) {
     ztoolkit.log(e);
     return await moveFile(attItem);
   }
+
+  // 在其他 collection 目录下创建 symlink
+  const allCollections = getAllCollectionPathsOfItem(attItem.topLevelItem);
+  // 获取主要 collection 路径（用户选中的或第一个）
+  const mainCollection = getCollectionPathsOfItem(attItem.topLevelItem);
+  // 如果没有主要 collection 或只有一个 collection，则不需要创建 symlink
+  if (!mainCollection || allCollections.length <= 1) {
+    ztoolkit.log("No multiple collections to create symlinks");
+  } else {
+    const otherCollections = allCollections.filter(c => c !== mainCollection);
+    const destRoot = await checkDir("destDir", "destination directory");
+    if (destRoot) {
+      for (const otherCollection of otherCollections) {
+        const otherDir = PathUtils.joinRelative(destRoot, otherCollection);
+        // 创建目录
+        if (!(await IOUtils.exists(otherDir))) {
+          const create = [otherDir];
+          let parent = PathUtils.parent(otherDir);
+          while (parent && !(await IOUtils.exists(parent))) {
+            create.push(parent);
+            parent = PathUtils.parent(parent);
+          }
+          await Promise.all(
+            create
+              .reverse()
+              .map(async (f) => await Zotero.File.createDirectoryIfMissingAsync(f)),
+          );
+        }
+        // 创建/更新 symlink 指向真实文件
+        const symlinkPath = PathUtils.joinRelative(otherDir, filename);
+        try {
+          // 如果已存在，先删除（无论是旧 symlink 还是其他文件）
+          if (await IOUtils.exists(symlinkPath)) {
+            await IOUtils.remove(symlinkPath);
+          }
+          await (IOUtils as any).createSymlink(destPath, symlinkPath);
+          ztoolkit.log(`Created symlink: ${symlinkPath} -> ${destPath}`);
+        } catch (e) {
+          ztoolkit.log(`Failed to create symlink: ${e}`);
+        }
+      }
+    }
+  }
+
   const json = attItem.toJSON();
   json.linkMode = "linked_file";
   json.path = destPath;
@@ -924,28 +979,85 @@ export async function moveFile(attItem: any) {
   return newAttItem;
 }
 
+export async function attachRenameMoveForItem(itemID: number) {
+  const item = await Zotero.Items.getAsync(itemID);
+  if (!item || !item.isRegularItem()) {
+    return false;
+  }
+  let attItem = await attachNewFile(
+    {
+      libraryID: item.libraryID,
+      parentItemID: item.id,
+      collections: undefined,
+      showProgress: false,
+    },
+  );
+  if (!attItem) {
+    return false;
+  }
+
+  try {
+    const canProcess = checkFileType(attItem);
+    const filenameNoExt = canProcess
+      ? await getAttachmentFilenameNoExt(attItem)
+      : null;
+    if (isFilenameMatched("filenameSkipAutoMoveRenameRules", filenameNoExt)) {
+      showAttachmentItem(attItem);
+      return true;
+    }
+    if (canProcess && Zotero.Prefs.get("autoRenameFiles")) {
+      const renamedItem = (await renameFile(attItem)) as Zotero.Item | undefined;
+      if (renamedItem) {
+        attItem = renamedItem;
+      }
+    }
+    if (
+      canProcess &&
+      getPref("autoMove") &&
+      getPref("attachType") == "linking"
+    ) {
+      const movedItem = (await moveFile(attItem)) as Zotero.Item | undefined;
+      if (movedItem) {
+        attItem = movedItem;
+      }
+    }
+  } catch (e) {
+    ztoolkit.log(e);
+  }
+
+  showAttachmentItem(attItem);
+  return true;
+}
+
 async function attachNewFile(options: {
   libraryID: number;
   parentItemID: number | undefined;
   collections: number[] | undefined;
+  showProgress?: boolean;
 }) {
+  const { showProgress = true, ...importOptions } = options;
   const sourceDir = await checkDir("sourceDir", "source path");
   if (!sourceDir) return;
   const path = getLastFileInFolder(sourceDir);
   if (!path) {
-    new ztoolkit.ProgressWindow(config.addonName)
-      .createLine({ text: "No File Found", type: "default" })
-      .show();
+    if (showProgress) {
+      new ztoolkit.ProgressWindow(config.addonName)
+        .createLine({ text: "No File Found", type: "default" })
+        .show();
+    }
   } else {
     const attItem = await Zotero.Attachments.importFromFile({
       file: path,
-      ...options,
+      ...importOptions,
     });
-    showAttachmentItem(attItem);
+    if (showProgress) {
+      showAttachmentItem(attItem);
+    }
     if (!attItem.parentItemID) {
       Zotero.RecognizeDocument.recognizeItems([attItem]);
     }
     removeFile(path);
+    return attItem;
   }
 }
 
@@ -981,42 +1093,49 @@ function file2md5(filepath: string) {
   return Zotero.Utilities.Internal.md5(Zotero.File.pathToFile(filepath));
 }
 /**
- * 获取Item的分类路径
- * @param item
- * @returns
+ * Helper function to get collection path from collection ID
  */
-function getCollectionPathsOfItem(item: Zotero.Item) {
-  const getCollectionPath = function (collectionID: number): string {
-    const collection = Zotero.Collections.get(
-      collectionID,
-    ) as Zotero.Collection;
-    if (!collection.parentID) {
-      return collection.name;
-    }
-    return (
-      getCollectionPath(collection.parentID) +
-      addon.data.folderSep +
-      collection.name
-    );
-  };
-  const itemCollections = item.getCollections().map(getCollectionPath)
+function _getCollectionPathFromID(collectionID: number): string {
+  const collection = Zotero.Collections.get(
+    collectionID,
+  ) as Zotero.Collection;
+  if (!collection.parentID) {
+    return collection.name;
+  }
+  return (
+    _getCollectionPathFromID(collection.parentID) +
+    addon.data.folderSep +
+    collection.name
+  );
+}
+
+/**
+ * 获取条目的所有 collection 路径
+ * @param item
+ * @returns 所有 collection 路径的数组
+ */
+function getAllCollectionPathsOfItem(item: Zotero.Item): string[] {
+  return item.getCollections().map(_getCollectionPathFromID);
+}
+
+/**
+ * 获取条目的主要 collection 路径（用户选中的或第一个）
+ * @param item
+ * @returns 主要 collection 路径
+ */
+function getCollectionPathsOfItem(item: Zotero.Item): string | undefined {
+  const itemCollections = item.getCollections().map(_getCollectionPathFromID);
   if (selectedCollection) {
-    const preferredCollection = [selectedCollection.id].map(getCollectionPath)[0] as string
-    ztoolkit.log({ preferredCollection, itemCollections })
-    const isExist = itemCollections.find(i => i == preferredCollection)
+    const preferredCollection = [selectedCollection.id].map(_getCollectionPathFromID)[0] as string;
+    ztoolkit.log({ preferredCollection, itemCollections });
+    const isExist = itemCollections.find(i => i == preferredCollection);
     if (isExist) {
-      return preferredCollection
+      return preferredCollection;
     }
   } else {
-    ztoolkit.log({ itemCollections })
-    return itemCollections[0]
+    ztoolkit.log({ itemCollections });
+    return itemCollections[0];
   }
-  // fix https://github.com/MuiseDestiny/zotero-attanger/issues/264
-  // if (selectedCollection) {
-  //   return [selectedCollection.id].map(getCollectionPath)[0];
-  // } else {
-  //   return item.getCollections().map(getCollectionPath).slice(0, 1)[0];
-  // }
 }
 
 /**

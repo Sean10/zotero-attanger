@@ -2,7 +2,7 @@ import { config } from "../package.json";
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
-import Menu from "./modules/menu";
+import Menu, { attachRenameMoveForItem } from "./modules/menu";
 // import { getPref } from "./utils/prefs";
 
 async function onStartup() {
@@ -27,6 +27,10 @@ async function onStartup() {
 async function onMainWindowLoad(win: Window): Promise<void> {
   addon.data.ztoolkit = createZToolkit();
   new Menu();
+  addon.api = {
+    ...addon.api,
+    attachRenameMoveForItem,
+  };
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {

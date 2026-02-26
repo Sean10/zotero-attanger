@@ -1,5 +1,3 @@
-import { ColumnOptions } from "zotero-plugin-toolkit/dist/helpers/virtualizedTable";
-import { DialogHelper } from "zotero-plugin-toolkit/dist/helpers/dialog";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
 import { config } from "../package.json";
@@ -18,7 +16,7 @@ class Addon {
       // columns: Array<ColumnOptions>;
       // rows: Array<{ [dataKey: string]: string }>;
     };
-    dialog?: DialogHelper;
+    dialog?: any;
     icons: { [name: string]: string };
     folderSep: string;
     notifierID: string;
