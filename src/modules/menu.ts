@@ -31,14 +31,16 @@ export default class Menu {
               }
               if (item.isTopLevelItem() && item.isRegularItem()) {
                 // 新条目创建（如 Connector 触发），尝试从 sourceDir 附加文件并重命名移动
-                try {
-                  const result = await attachRenameMoveForItem(item.id);
-                  if (result) {
-                    ztoolkit.log(`Auto attach-rename-move completed for item ${item.id}`);
-                    continue;
+                if (getPref("autoAttachRenameMoveOnCreate")) {
+                  try {
+                    const result = await attachRenameMoveForItem(item.id);
+                    if (result) {
+                      ztoolkit.log(`Auto attach-rename-move completed for item ${item.id}`);
+                      continue;
+                    }
+                  } catch (e) {
+                    ztoolkit.log(`Auto attach-rename-move failed for item ${item.id}:`, e);
                   }
-                } catch (e) {
-                  ztoolkit.log(`Auto attach-rename-move failed for item ${item.id}:`, e);
                 }
                 // 如果 sourceDir 没有文件，回退到处理已有附件的逻辑
                 await Zotero.Promise.delay(1000);
