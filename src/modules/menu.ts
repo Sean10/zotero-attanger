@@ -907,6 +907,47 @@ export async function moveFile(attItem: any) {
     ztoolkit.log(e);
     return await moveFile(attItem);
   }
+
+  // 在其他 collection 目录下创建 symlink
+  const allCollections = getAllCollectionPathsOfItem(attItem.topLevelItem);
+  const mainCollection = getCollectionPathsOfItem(attItem.topLevelItem);
+  if (!mainCollection || allCollections.length <= 1) {
+    ztoolkit.log("No multiple collections to create symlinks");
+  } else {
+    const otherCollections = allCollections.filter(c => c !== mainCollection);
+    const destRoot = await checkDir("destDir", "destination directory");
+    if (destRoot) {
+      for (const otherCollection of otherCollections) {
+        const otherDir = PathUtils.joinRelative(destRoot, otherCollection);
+        // 创建目录
+        if (!(await IOUtils.exists(otherDir))) {
+          const create = [otherDir];
+          let parent = PathUtils.parent(otherDir);
+          while (parent && !(await IOUtils.exists(parent))) {
+            create.push(parent);
+            parent = PathUtils.parent(parent);
+          }
+          await Promise.all(
+            create
+              .reverse()
+              .map(async (f) => await Zotero.File.createDirectoryIfMissingAsync(f)),
+          );
+        }
+        // 创建/更新 symlink 指向真实文件
+        const symlinkPath = PathUtils.joinRelative(otherDir, filename);
+        try {
+          if (await IOUtils.exists(symlinkPath)) {
+            await IOUtils.remove(symlinkPath);
+          }
+          await Zotero.File.createSymlink(destPath, symlinkPath);
+          ztoolkit.log(`Created symlink: ${symlinkPath} -> ${destPath}`);
+        } catch (e) {
+          ztoolkit.log(`Failed to create symlink: ${e}`);
+        }
+      }
+    }
+  }
+
   const json = attItem.toJSON();
   json.linkMode = "linked_file";
   json.path = destPath;
@@ -985,38 +1026,50 @@ function file2md5(filepath: string) {
  * @param item
  * @returns
  */
-function getCollectionPathsOfItem(item: Zotero.Item) {
-  const getCollectionPath = function (collectionID: number): string {
-    const collection = Zotero.Collections.get(
-      collectionID,
-    ) as Zotero.Collection;
-    if (!collection.parentID) {
-      return collection.name;
-    }
-    return (
-      getCollectionPath(collection.parentID) +
-      addon.data.folderSep +
-      collection.name
-    );
-  };
-  const itemCollections = item.getCollections().map(getCollectionPath)
+/**
+ * Helper function to get collection path from collection ID
+ */
+function _getCollectionPathFromID(collectionID: number): string {
+  const collection = Zotero.Collections.get(
+    collectionID,
+  ) as Zotero.Collection;
+  if (!collection.parentID) {
+    return collection.name;
+  }
+  return (
+    _getCollectionPathFromID(collection.parentID) +
+    addon.data.folderSep +
+    collection.name
+  );
+}
+
+/**
+ * 获取条目的所有 collection 路径
+ * @param item
+ * @returns 所有 collection 路径的数组
+ */
+function getAllCollectionPathsOfItem(item: Zotero.Item): string[] {
+  return item.getCollections().map(_getCollectionPathFromID);
+}
+
+/**
+ * 获取条目的主要 collection 路径（用户选中的或第一个）
+ * @param item
+ * @returns 主要 collection 路径
+ */
+function getCollectionPathsOfItem(item: Zotero.Item): string | undefined {
+  const itemCollections = item.getCollections().map(_getCollectionPathFromID);
   if (selectedCollection) {
-    const preferredCollection = [selectedCollection.id].map(getCollectionPath)[0] as string
-    ztoolkit.log({ preferredCollection, itemCollections })
-    const isExist = itemCollections.find(i => i == preferredCollection)
+    const preferredCollection = [selectedCollection.id].map(_getCollectionPathFromID)[0] as string;
+    ztoolkit.log({ preferredCollection, itemCollections });
+    const isExist = itemCollections.find(i => i == preferredCollection);
     if (isExist) {
-      return preferredCollection
+      return preferredCollection;
     }
   } else {
-    ztoolkit.log({ itemCollections })
-    return itemCollections[0]
+    ztoolkit.log({ itemCollections });
+    return itemCollections[0];
   }
-  // fix https://github.com/MuiseDestiny/zotero-attanger/issues/264
-  // if (selectedCollection) {
-  //   return [selectedCollection.id].map(getCollectionPath)[0];
-  // } else {
-  //   return item.getCollections().map(getCollectionPath).slice(0, 1)[0];
-  // }
 }
 
 /**
