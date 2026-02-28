@@ -1143,10 +1143,10 @@ function getCollectionPathsOfItem(item: Zotero.Item): string | undefined {
     if (isExist) {
       return preferredCollection;
     }
-  } else {
-    ztoolkit.log({ itemCollections });
-    return itemCollections[0];
   }
+  // selectedCollection 未设置，或者不在 item 的 collections 中时，fallback 到第一个
+  ztoolkit.log({ itemCollections });
+  return itemCollections[0];
 }
 
 /**
